@@ -1,0 +1,6 @@
+# Secrets
+.env
+
+# Generated files
+generated_backups/
+backup_user.py
