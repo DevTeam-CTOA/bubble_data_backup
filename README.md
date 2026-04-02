@@ -7,7 +7,6 @@ CLI tool to back up Bubble.io Data API tables to CSV files.
 - **Full backup**: Creates timestamped full snapshots for all enabled Bubble tables
 - **Incremental backup**: Fetches only rows changed since the last watermark using `Modified Date`
 - **Consolidated snapshots**: Maintains the latest merged CSV per table using `_id` upserts
-- **Resume capability**: Can resume incomplete full backups from a specific date
 - **Date-based organization**: Each backup creates a dated folder
 
 ## Setup
@@ -48,20 +47,12 @@ python3 recurrent_backup.py
 
 The recurrent backup:
 
-1. Reads the last saved watermark for each table from `generated_backups/incremental_state.json`
+1. Reads the current consolidated baseline from `generated_backups/consolidated/<table>.csv`
 2. Fetches only rows whose `Modified Date` is newer than the last watermark, with a safety overlap
 3. Saves those changes as delta CSVs
 4. Consolidates the deltas into `generated_backups/consolidated/<table>.csv` using `_id` upserts
 
-If no consolidated baseline exists for a table yet, `recurrent_backup.py` seeds that table with a one-time full export automatically.
-
-### Resume Incomplete Full Backup
-
-```bash
-python3 resume_backup.py
-```
-
-This flow inspects an existing dated backup folder and completes only the missing or incomplete full-table exports.
+`recurrent_backup.py` assumes `full_backup.py` has already been run at least once. If a consolidated baseline is missing, it stops that table and asks you to run the full backup first.
 
 ## Output Structure
 
@@ -77,11 +68,10 @@ generated_backups/
 ├── consolidated/
 │   ├── user.csv
 │   └── course.csv
-└── incremental_state.json
 ```
 
 ## Notes
 
 - Incremental consolidation uses `_id` upserts, not simple append, so updated Bubble rows overwrite prior versions.
 - Deleted rows are not detected by the incremental flow alone. Run `full_backup.py` periodically to reconcile deletions and refresh the baseline.
-- `resume_backup.py` remains focused on completing interrupted full backups.
+- There is no resume flow anymore. If a run fails, just run `full_backup.py` or `recurrent_backup.py` again from the start.

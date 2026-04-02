@@ -10,12 +10,8 @@ from backup_utils import (
     get_all_data_types,
     get_consolidated_path,
     get_row_count,
-    load_state,
     make_date_folder,
     make_timestamp,
-    max_modified_at,
-    save_state,
-    update_table_state,
     fetch_records,
     write_csv,
     write_schema,
@@ -27,7 +23,6 @@ def main():
     dated_output_dir = os.path.join(OUTPUT_DIR, make_date_folder())
     os.makedirs(dated_output_dir, exist_ok=True)
     timestamp = make_timestamp()
-    state = load_state()
 
     all_types, enabled = get_all_data_types()
     print(f"Found {len(all_types)} data types ({len(enabled)} enabled)\n")
@@ -63,14 +58,12 @@ def main():
 
         num_cols = write_csv(records, snapshot_filename, headers)
         write_csv(records, consolidated_filename, headers)
-        update_table_state(state, dt, max_modified_at(records), source_file=os.path.basename(snapshot_filename))
 
         print(
             f"  Saved snapshot: {snapshot_filename} ({len(records)} records, {num_cols} columns)"
         )
         print(f"  Updated consolidated baseline: {consolidated_filename}\n")
 
-    save_state(state)
     print("Full backup complete!")
 
 

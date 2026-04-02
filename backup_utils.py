@@ -2,11 +2,9 @@
 """Shared helpers for Bubble backup scripts."""
 
 import csv
-import glob
 import json
 import os
 import re
-import shutil
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -25,7 +23,6 @@ HEADERS = {"Authorization": f"Bearer {API_TOKEN}"}
 PAGE_SIZE = 100
 OUTPUT_DIR = os.path.join(BASE_DIR, "generated_backups")
 CONSOLIDATED_DIR = os.path.join(OUTPUT_DIR, "consolidated")
-STATE_FILE = os.path.join(OUTPUT_DIR, "incremental_state.json")
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("BUBBLE_REQUEST_TIMEOUT_SECONDS", "60"))
 INCREMENTAL_OVERLAP_SECONDS = int(os.getenv("BUBBLE_INCREMENTAL_OVERLAP_SECONDS", "300"))
 MAX_CONCURRENT_TABLES = int(os.getenv("MAX_CONCURRENT_TABLES", "5"))
@@ -50,20 +47,6 @@ def ensure_output_dirs():
     """Ensures the output directories exist."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(CONSOLIDATED_DIR, exist_ok=True)
-
-
-def list_backup_folders():
-    """Lists all available backup folders."""
-    if not os.path.exists(OUTPUT_DIR):
-        return []
-
-    folders = []
-    for item in os.listdir(OUTPUT_DIR):
-        item_path = os.path.join(OUTPUT_DIR, item)
-        if os.path.isdir(item_path) and re.match(r"^\d{4}-\d{2}-\d{2}$", item):
-            folders.append(item)
-
-    return sorted(folders, reverse=True)
 
 
 def get_all_data_types():
@@ -268,35 +251,6 @@ def get_consolidated_path(table_name):
     ensure_output_dirs()
     return os.path.join(CONSOLIDATED_DIR, f"{table_name}.csv")
 
-
-def load_state():
-    """Loads incremental backup state from disk."""
-    if not os.path.exists(STATE_FILE):
-        return {"tables": {}}
-
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if "tables" not in data or not isinstance(data["tables"], dict):
-        data["tables"] = {}
-    return data
-
-
-def save_state(state):
-    """Persists incremental backup state."""
-    ensure_output_dirs()
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False, sort_keys=True)
-
-
-def update_table_state(state, table_name, last_modified_at, source_file=None):
-    """Updates incremental state for a single table."""
-    table_state = state.setdefault("tables", {}).setdefault(table_name, {})
-    table_state["last_modified_at"] = format_bubble_datetime(last_modified_at) if last_modified_at else None
-    if source_file:
-        table_state["source_file"] = source_file
-
-
 def read_csv_records(filename):
     """Reads CSV rows into memory preserving header order."""
     with open(filename, "r", newline="", encoding="utf-8") as f:
@@ -304,62 +258,6 @@ def read_csv_records(filename):
         headers = reader.fieldnames or []
         records = list(reader)
     return headers, records
-
-
-def latest_full_snapshot_path(table_name):
-    """Returns the latest non-incremental snapshot path for a table, if any."""
-    pattern = os.path.join(OUTPUT_DIR, "*", f"{table_name}_*.csv")
-    candidates = []
-    for path in glob.glob(pattern):
-        if not os.path.isfile(path):
-            continue
-        name = os.path.basename(path)
-        if name.startswith("schema_"):
-            continue
-        if "_incremental_" in name:
-            continue
-        candidates.append(path)
-
-    if not candidates:
-        return None
-    return sorted(candidates)[-1]
-
-
-def bootstrap_table_from_snapshot(state, table_name, snapshot_path):
-    """Copies an existing full snapshot into the consolidated area and seeds state."""
-    consolidated_path = get_consolidated_path(table_name)
-    shutil.copyfile(snapshot_path, consolidated_path)
-    headers, records = read_csv_records(consolidated_path)
-    max_dt = max_modified_at(records)
-    update_table_state(state, table_name, max_dt, source_file=os.path.basename(snapshot_path))
-    return headers, records, consolidated_path
-
-
-def seed_table_from_records(state, table_name, records, source_filename):
-    """Creates a consolidated baseline from fetched records."""
-    consolidated_path = get_consolidated_path(table_name)
-    headers = collect_all_keys(records, preferred_keys=["_id"])
-    write_csv(records, consolidated_path, headers)
-    update_table_state(state, table_name, max_modified_at(records), source_file=os.path.basename(source_filename))
-    return headers, records, consolidated_path
-
-
-def ensure_table_baseline(state, table_name):
-    """Returns an existing consolidated baseline, bootstrapping it when possible."""
-    consolidated_path = get_consolidated_path(table_name)
-    if os.path.exists(consolidated_path):
-        headers, records = read_csv_records(consolidated_path)
-        table_state = state.setdefault("tables", {}).setdefault(table_name, {})
-        if "last_modified_at" not in table_state:
-            update_table_state(state, table_name, max_modified_at(records), source_file=os.path.basename(consolidated_path))
-        return headers, records, consolidated_path
-
-    snapshot_path = latest_full_snapshot_path(table_name)
-    if snapshot_path:
-        print(f"  Bootstrapping consolidated baseline from {snapshot_path}")
-        return bootstrap_table_from_snapshot(state, table_name, snapshot_path)
-
-    return None, None, consolidated_path
 
 
 def merge_records_by_id(existing_records, delta_records):
@@ -390,7 +288,10 @@ def merge_records_by_id(existing_records, delta_records):
 
 def watermark_with_overlap(last_modified_at):
     """Returns the fetch watermark adjusted with a safety overlap."""
-    dt = parse_bubble_datetime(last_modified_at)
-    if dt is None:
+    if last_modified_at is None:
         return None
-    return dt - timedelta(seconds=INCREMENTAL_OVERLAP_SECONDS)
+    if isinstance(last_modified_at, str):
+        last_modified_at = parse_bubble_datetime(last_modified_at)
+    if last_modified_at is None:
+        return None
+    return last_modified_at - timedelta(seconds=INCREMENTAL_OVERLAP_SECONDS)
