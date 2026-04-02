@@ -28,6 +28,9 @@ CONSOLIDATED_DIR = os.path.join(OUTPUT_DIR, "consolidated")
 STATE_FILE = os.path.join(OUTPUT_DIR, "incremental_state.json")
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("BUBBLE_REQUEST_TIMEOUT_SECONDS", "60"))
 INCREMENTAL_OVERLAP_SECONDS = int(os.getenv("BUBBLE_INCREMENTAL_OVERLAP_SECONDS", "300"))
+MAX_CONCURRENT_TABLES = int(os.getenv("MAX_CONCURRENT_TABLES", "5"))
+LARGE_TABLE_ROW_THRESHOLD = int(os.getenv("LARGE_TABLE_ROW_THRESHOLD", "100000"))
+MAX_CONCURRENT_LARGE_TABLES = int(os.getenv("MAX_CONCURRENT_LARGE_TABLES", "2"))
 BUBBLE_MODIFIED_FIELD = "Modified Date"
 LOCAL_TZ = timezone(timedelta(hours=-3))
 
@@ -47,6 +50,20 @@ def ensure_output_dirs():
     """Ensures the output directories exist."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(CONSOLIDATED_DIR, exist_ok=True)
+
+
+def list_backup_folders():
+    """Lists all available backup folders."""
+    if not os.path.exists(OUTPUT_DIR):
+        return []
+
+    folders = []
+    for item in os.listdir(OUTPUT_DIR):
+        item_path = os.path.join(OUTPUT_DIR, item)
+        if os.path.isdir(item_path) and re.match(r"^\d{4}-\d{2}-\d{2}$", item):
+            folders.append(item)
+
+    return sorted(folders, reverse=True)
 
 
 def get_all_data_types():

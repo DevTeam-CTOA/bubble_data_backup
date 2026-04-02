@@ -9,8 +9,6 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
 
 try:
     import aiohttp
@@ -18,39 +16,19 @@ except ImportError:
     print("Error: aiohttp is required. Install it with: pip3 install aiohttp")
     sys.exit(1)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(BASE_DIR, ".env"))
-
-API_URL = os.environ["BUBBLE_API_URL"]
-API_TOKEN = os.environ["BUBBLE_API_TOKEN"]
-API_BASE = f"{API_URL}/obj"
-HEADERS = {"Authorization": f"Bearer {API_TOKEN}"}
-PAGE_SIZE = 100  # Bubble API max limit per request
-OUTPUT_DIR = os.path.join(BASE_DIR, "generated_backups")
-MAX_CONCURRENT_TABLES = int(os.getenv("MAX_CONCURRENT_TABLES", "5"))
-LARGE_TABLE_ROW_THRESHOLD = int(os.getenv("LARGE_TABLE_ROW_THRESHOLD", "100000"))
-MAX_CONCURRENT_LARGE_TABLES = int(os.getenv("MAX_CONCURRENT_LARGE_TABLES", "2"))
-
-
-def make_timestamp():
-    """Generates an ISO 8601 timestamp with GMT-3 offset, filesystem-safe."""
-    tz = timezone(timedelta(hours=-3))
-    now = datetime.now(tz)
-    return now.strftime("%Y-%m-%dT%H-%M-%S%z")
-
-
-def list_backup_folders():
-    """Lists all available backup folders."""
-    if not os.path.exists(OUTPUT_DIR):
-        return []
-
-    folders = []
-    for item in os.listdir(OUTPUT_DIR):
-        item_path = os.path.join(OUTPUT_DIR, item)
-        if os.path.isdir(item_path) and re.match(r'^\d{4}-\d{2}-\d{2}$', item):
-            folders.append(item)
-
-    return sorted(folders, reverse=True)
+from backup_utils import (
+    API_BASE,
+    HEADERS,
+    LARGE_TABLE_ROW_THRESHOLD,
+    MAX_CONCURRENT_LARGE_TABLES,
+    MAX_CONCURRENT_TABLES,
+    OUTPUT_DIR,
+    PAGE_SIZE,
+    REQUEST_TIMEOUT_SECONDS,
+    flatten_value,
+    list_backup_folders,
+    make_timestamp,
+)
 
 
 def get_incomplete_tables(backup_folder):
@@ -141,7 +119,7 @@ async def fetch_to_jsonl(session, data_type, table_lock, temp_path):
             params = {"limit": PAGE_SIZE, "cursor": cursor}
 
             try:
-                async with session.get(url, headers=HEADERS, params=params, timeout=60) as resp:
+                async with session.get(url, headers=HEADERS, params=params) as resp:
                     if resp.status != 200:
                         text = await resp.text()
                         async with table_lock:
@@ -169,24 +147,20 @@ async def fetch_to_jsonl(session, data_type, table_lock, temp_path):
 
                     cursor += PAGE_SIZE
                     await asyncio.sleep(0.5)  # Rate limiting
+            except asyncio.TimeoutError:
+                async with table_lock:
+                    print(
+                        f"  Timeout for '{data_type}' at cursor {cursor} after {REQUEST_TIMEOUT_SECONDS:.0f}s without response. "
+                        "Stopping this table and moving on.",
+                        file=sys.stderr,
+                    )
+                return None
             except Exception as e:
                 async with table_lock:
                     print(f"  Error fetching '{data_type}': {e}", file=sys.stderr)
                 return None
 
     return total_records, all_keys
-
-
-def flatten_value(val):
-    """Converts a value to a CSV-friendly string."""
-    if val is None:
-        return ""
-    if isinstance(val, bool):
-        return str(val).lower()
-    if isinstance(val, (dict, list)):
-        return json.dumps(val, ensure_ascii=False)
-    return str(val)
-
 
 def write_csv_from_jsonl(jsonl_path, all_keys, filename):
     """Writes a CSV file from a JSONL temp file."""
@@ -336,7 +310,8 @@ async def resume_backup(backup_folder):
     print(f"Max concurrent large tables: {MAX_CONCURRENT_LARGE_TABLES}\n")
 
     # Create aiohttp session
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         table_lock = asyncio.Lock()  # Lock for synchronized console output
         large_tables, regular_tables = split_tables_by_size(incomplete)
 
