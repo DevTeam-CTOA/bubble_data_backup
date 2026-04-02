@@ -2,6 +2,7 @@
 """Backs up all Bubble data types to CSV files and refreshes the consolidated baseline."""
 
 import os
+import sys
 
 from backup_utils import (
     OUTPUT_DIR,
@@ -44,12 +45,15 @@ def main():
     print(f"Output folder: {dated_output_dir}")
     print(f"Timestamp: {timestamp}\n")
 
+    failed_tables = []
+
     for dt in enabled:
         print(f"[{dt}]")
         records = fetch_records(dt)
 
         if records is None:
             print("  FAILED — skipping\n")
+            failed_tables.append(dt)
             continue
 
         headers = collect_all_keys(records, preferred_keys=["_id"])
@@ -63,6 +67,13 @@ def main():
             f"  Saved snapshot: {snapshot_filename} ({len(records)} records, {num_cols} columns)"
         )
         print(f"  Updated consolidated baseline: {consolidated_filename}\n")
+
+    if failed_tables:
+        print("Full backup finished with failures.")
+        print("Failed tables:")
+        for dt in failed_tables:
+            print(f"  - {dt}")
+        sys.exit(1)
 
     print("Full backup complete!")
 

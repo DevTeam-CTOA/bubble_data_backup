@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -28,6 +29,8 @@ INCREMENTAL_OVERLAP_SECONDS = int(os.getenv("BUBBLE_INCREMENTAL_OVERLAP_SECONDS"
 MAX_CONCURRENT_TABLES = int(os.getenv("MAX_CONCURRENT_TABLES", "5"))
 LARGE_TABLE_ROW_THRESHOLD = int(os.getenv("LARGE_TABLE_ROW_THRESHOLD", "100000"))
 MAX_CONCURRENT_LARGE_TABLES = int(os.getenv("MAX_CONCURRENT_LARGE_TABLES", "2"))
+REQUEST_MAX_RETRIES = int(os.getenv("BUBBLE_REQUEST_MAX_RETRIES", "3"))
+REQUEST_RETRY_BACKOFF_SECONDS = float(os.getenv("BUBBLE_REQUEST_RETRY_BACKOFF_SECONDS", "2"))
 BUBBLE_MODIFIED_FIELD = "Modified Date"
 LOCAL_TZ = timezone(timedelta(hours=-3))
 
@@ -49,23 +52,81 @@ def ensure_output_dirs():
     os.makedirs(CONSOLIDATED_DIR, exist_ok=True)
 
 
+def _request_with_retries(url, *, params=None, label, retry_on_statuses=None):
+    """Performs a GET request with retry/backoff for transient failures."""
+    retry_on_statuses = retry_on_statuses or {429, 500, 502, 503, 504}
+
+    for attempt in range(REQUEST_MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                url,
+                headers=HEADERS,
+                params=params,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.Timeout:
+            resp = None
+            error_message = (
+                f"Timeout for '{label}' after {REQUEST_TIMEOUT_SECONDS:.0f}s"
+            )
+        except requests.RequestException as exc:
+            resp = None
+            error_message = f"Request error for '{label}': {exc}"
+        else:
+            if resp.status_code == 200:
+                return resp
+
+            if resp.status_code not in retry_on_statuses:
+                return resp
+
+            error_message = f"Transient API error for '{label}': {resp.status_code}"
+
+        if attempt >= REQUEST_MAX_RETRIES:
+            if resp is not None:
+                print(f"  API error for '{label}': {resp.status_code} - {resp.text}", file=sys.stderr)
+            else:
+                print(f"  {error_message}", file=sys.stderr)
+            return None
+
+        backoff = REQUEST_RETRY_BACKOFF_SECONDS * (2 ** attempt)
+        print(
+            f"  {error_message}. Retrying in {backoff:.1f}s "
+            f"({attempt + 1}/{REQUEST_MAX_RETRIES})...",
+            file=sys.stderr,
+        )
+        time.sleep(backoff)
+
+
+def _atomic_csv_write(filename, headers, rows):
+    """Writes a CSV file atomically to avoid partial/corrupted outputs."""
+    directory = os.path.dirname(filename) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".tmp-", suffix=".csv", dir=directory)
+
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+            writer.writerow(headers)
+            for row in rows:
+                writer.writerow(row)
+        os.replace(temp_path, filename)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def get_all_data_types():
     """Fetches all available data types from the /meta API."""
     print("Fetching available data types from API...")
-    try:
-        resp = requests.get(API_META, headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS)
-    except requests.Timeout:
-        print(
-            f"Timeout while fetching API metadata after {REQUEST_TIMEOUT_SECONDS:.0f}s. Backup aborted.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except requests.RequestException as exc:
-        print(f"Error fetching API metadata: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    if resp.status_code != 200:
-        print(f"API error: {resp.status_code} - {resp.text}", file=sys.stderr)
+    resp = _request_with_retries(API_META, label="API metadata")
+    if resp is None or resp.status_code != 200:
+        if resp is not None:
+            print(f"API error: {resp.status_code} - {resp.text}", file=sys.stderr)
+        else:
+            print("Unable to fetch API metadata. Backup aborted.", file=sys.stderr)
         sys.exit(1)
 
     data = resp.json()
@@ -80,29 +141,17 @@ def get_row_count(data_type):
     """Gets the total row count for a data type with a single API call."""
     url = f"{API_BASE}/{data_type}"
     params = {"limit": 1, "cursor": 0}
-
-    try:
-        resp = requests.get(
-            url,
-            headers=HEADERS,
-            params=params,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        if resp.status_code != 200:
-            return None
-
-        data = resp.json()["response"]
-        results = data.get("results", [])
-        remaining = data.get("remaining", 0)
-        return len(results) + remaining
-    except requests.Timeout:
-        print(
-            f"  Timeout while counting rows for '{data_type}' after {REQUEST_TIMEOUT_SECONDS:.0f}s",
-            file=sys.stderr,
-        )
+    resp = _request_with_retries(url, params=params, label=f"{data_type} row count")
+    if resp is None:
         return None
-    except requests.RequestException:
+
+    if resp.status_code != 200:
         return None
+
+    data = resp.json()["response"]
+    results = data.get("results", [])
+    remaining = data.get("remaining", 0)
+    return len(results) + remaining
 
 
 def fetch_records(data_type, constraints=None, progress_label=None):
@@ -117,24 +166,9 @@ def fetch_records(data_type, constraints=None, progress_label=None):
         if constraints:
             params["constraints"] = json.dumps(constraints)
 
-        try:
-            resp = requests.get(
-                url,
-                headers=HEADERS,
-                params=params,
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-        except requests.Timeout:
-            print(
-                f"  Timeout for '{label}' at cursor {cursor} after {REQUEST_TIMEOUT_SECONDS:.0f}s without response. "
-                "Stopping this table and moving on.",
-                file=sys.stderr,
-            )
+        resp = _request_with_retries(url, params=params, label=f"{label} at cursor {cursor}")
+        if resp is None:
             return None
-        except requests.RequestException as exc:
-            print(f"  Request error for '{label}' at cursor {cursor}: {exc}", file=sys.stderr)
-            return None
-
         if resp.status_code != 200:
             print(f"  API error for '{label}': {resp.status_code} - {resp.text}", file=sys.stderr)
             return None
@@ -191,26 +225,21 @@ def write_csv(records, filename, all_keys=None):
     if not headers:
         headers = ["_id"]
 
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_ALL)
-        writer.writerow(headers)
-        for rec in records:
-            row = [flatten_value(rec.get(k)) for k in headers]
-            writer.writerow(row)
+    rows = ([flatten_value(rec.get(k)) for k in headers] for rec in records)
+    _atomic_csv_write(filename, headers, rows)
 
     return len(headers)
 
 
 def write_schema(all_types, enabled, row_counts, filename):
     """Writes the schema CSV file."""
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["data_type", "api_enabled", "row_count"])
-        for dt in all_types:
-            is_enabled = dt in enabled
-            count = row_counts.get(dt, "")
-            count_str = str(count) if count is not None else ""
-            writer.writerow([dt, "yes" if is_enabled else "no", count_str])
+    rows = []
+    for dt in all_types:
+        is_enabled = dt in enabled
+        count = row_counts.get(dt, "")
+        count_str = str(count) if count is not None else ""
+        rows.append([dt, "yes" if is_enabled else "no", count_str])
+    _atomic_csv_write(filename, ["data_type", "api_enabled", "row_count"], rows)
 
 
 def parse_bubble_datetime(value):

@@ -66,17 +66,24 @@ def main():
     print(f"Output folder: {dated_output_dir}")
     print(f"Timestamp: {timestamp}\n")
 
+    missing_baselines = []
+    for dt in enabled:
+        consolidated_path = get_consolidated_path(dt)
+        if not os.path.exists(consolidated_path):
+            missing_baselines.append((dt, consolidated_path))
+
+    if missing_baselines:
+        print("Incremental backup aborted: missing consolidated baselines.")
+        for dt, consolidated_path in missing_baselines:
+            print(f"  {dt}: {consolidated_path}")
+        print("Run full_backup.py successfully before recurrent_backup.py.")
+        sys.exit(1)
+
     had_failures = False
 
     for dt in enabled:
         print(f"[{dt}]")
         consolidated_path = get_consolidated_path(dt)
-
-        if not os.path.exists(consolidated_path):
-            print(f"  Missing consolidated baseline: {consolidated_path}")
-            print("  Run full_backup.py first.\n")
-            had_failures = True
-            continue
 
         existing_headers, existing_records = read_csv_records(consolidated_path)
         last_modified_at = max_modified_at(existing_records)
