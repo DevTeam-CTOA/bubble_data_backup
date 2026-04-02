@@ -9,6 +9,7 @@ from backup_utils import (
     OUTPUT_DIR,
     collect_all_keys,
     ensure_output_dirs,
+    fetch_complete_records,
     fetch_records,
     format_bubble_datetime,
     get_all_data_types,
@@ -95,11 +96,18 @@ def main():
         else:
             print("  No usable Modified Date in the baseline. Running a full refresh for this table.")
 
-        delta_records = fetch_records(
-            dt,
-            constraints=constraints,
-            progress_label=f"{dt} incremental",
-        )
+        if full_refresh:
+            delta_records = fetch_complete_records(
+                dt,
+                row_count=row_counts.get(dt),
+                progress_label=f"{dt} incremental",
+            )
+        else:
+            delta_records = fetch_records(
+                dt,
+                constraints=constraints,
+                progress_label=f"{dt} incremental",
+            )
 
         if delta_records is None:
             print("  FAILED — skipping\n")

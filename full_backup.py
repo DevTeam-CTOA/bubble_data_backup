@@ -12,13 +12,13 @@ from backup_utils import (
     OUTPUT_DIR,
     collect_all_keys,
     ensure_output_dirs,
+    fetch_complete_records,
     get_all_data_types,
     get_consolidated_path,
     get_row_count,
     is_large_table,
     make_date_folder,
     make_timestamp,
-    fetch_records,
     write_csv,
     write_schema,
 )
@@ -49,10 +49,14 @@ def fetch_row_counts(enabled_tables):
     return row_counts
 
 
-def backup_table(table_name, dated_output_dir, timestamp):
+def backup_table(table_name, row_count, dated_output_dir, timestamp):
     """Backs up a single Bubble table to snapshot and consolidated CSVs."""
     print(f"[{table_name}] Starting backup...")
-    records = fetch_records(table_name, progress_label=table_name)
+    records = fetch_complete_records(
+        table_name,
+        row_count=row_count,
+        progress_label=table_name,
+    )
 
     if records is None:
         return {"table_name": table_name, "success": False}
@@ -128,7 +132,13 @@ def main():
             )
         )
         for table_name in regular_tables:
-            future = executors[-1].submit(backup_table, table_name, dated_output_dir, timestamp)
+            future = executors[-1].submit(
+                backup_table,
+                table_name,
+                row_counts.get(table_name),
+                dated_output_dir,
+                timestamp,
+            )
             future_to_table[future] = table_name
 
     if large_tables:
@@ -140,7 +150,13 @@ def main():
             )
         )
         for table_name in large_tables:
-            future = executors[-1].submit(backup_table, table_name, dated_output_dir, timestamp)
+            future = executors[-1].submit(
+                backup_table,
+                table_name,
+                row_counts.get(table_name),
+                dated_output_dir,
+                timestamp,
+            )
             future_to_table[future] = table_name
 
     try:
