@@ -1,6 +1,9 @@
 # Secrets
 .env
 
+# macOS
+.DS_Store
+
 # Generated files
 generated_backups/
 backup_user.py
