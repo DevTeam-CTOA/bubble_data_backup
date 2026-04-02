@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Backs up selected data types listed in backup_selected_data-types.csv."""
+"""Backs up all Bubble data types to CSV files."""
 
 import csv
 import json
 import os
+import re
 import requests
 import sys
 import time
@@ -15,11 +16,11 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 API_URL = os.environ["BUBBLE_API_URL"]
 API_TOKEN = os.environ["BUBBLE_API_TOKEN"]
+API_META = f"{API_URL}/meta"
 API_BASE = f"{API_URL}/obj"
 HEADERS = {"Authorization": f"Bearer {API_TOKEN}"}
 PAGE_SIZE = 100
 OUTPUT_DIR = os.path.join(BASE_DIR, "generated_backups")
-SELECTION_FILE = os.path.join(BASE_DIR, "backup_selected_data-types.csv")
 
 
 def make_timestamp():
@@ -27,6 +28,50 @@ def make_timestamp():
     tz = timezone(timedelta(hours=-3))
     now = datetime.now(tz)
     return now.strftime("%Y-%m-%dT%H-%M-%S%z")
+
+
+def get_all_data_types():
+    """Fetches all available data types from the /meta API."""
+    print("Fetching available data types from API...")
+    resp = requests.get(API_META, headers=HEADERS)
+
+    if resp.status_code != 200:
+        print(f"API error: {resp.status_code} - {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+    data = resp.json()
+
+    # Data types with Data API enabled ("get" field)
+    enabled = set(data.get("get", []))
+
+    # Data types referenced in workflows (custom.typename)
+    raw = json.dumps(data)
+    referenced = set(re.findall(r"custom\.(\w+)", raw))
+
+    # Combine all
+    all_types = sorted(enabled | referenced)
+
+    return all_types, enabled
+
+
+def get_row_count(data_type):
+    """Gets the total row count for a data type with a single API call."""
+    url = f"{API_BASE}/{data_type}"
+    params = {"limit": 1, "cursor": 0}
+
+    try:
+        resp = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        if resp.status_code != 200:
+            # 401 = not accessible (privacy rules), just skip silently
+            return None
+
+        data = resp.json()["response"]
+        results = data.get("results", [])
+        remaining = data.get("remaining", 0)
+
+        return len(results) + remaining
+    except Exception:
+        return None
 
 
 def fetch_all(data_type):
@@ -90,31 +135,52 @@ def write_csv(records, filename):
     return len(all_keys)
 
 
-def load_selected_types():
-    """Reads selected data types from the CSV file."""
-    try:
-        with open(SELECTION_FILE, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            return [row["data_type"].strip() for row in reader if row["data_type"].strip()]
-    except FileNotFoundError:
-        print(f"File '{SELECTION_FILE}' not found.", file=sys.stderr)
-        print("Run check_tables.py first and create the selection file.", file=sys.stderr)
-        sys.exit(1)
+def write_schema(all_types, enabled, row_counts, filename):
+    """Writes the schema CSV file."""
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["data_type", "api_enabled", "row_count"])
+        for dt in all_types:
+            is_enabled = dt in enabled
+            count = row_counts.get(dt, "")
+            count_str = str(count) if count is not None else ""
+            writer.writerow([dt, "yes" if is_enabled else "no", count_str])
 
 
 def main():
-    selected = load_selected_types()
-    if not selected:
-        print("No data types selected.", file=sys.stderr)
-        sys.exit(1)
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Create date-specific subfolder
+    tz = timezone(timedelta(hours=-3))
+    date_folder = datetime.now(tz).strftime("%Y-%m-%d")
+    dated_output_dir = os.path.join(OUTPUT_DIR, date_folder)
+    os.makedirs(dated_output_dir, exist_ok=True)
 
     timestamp = make_timestamp()
-    print(f"Backup started — {len(selected)} table(s) selected")
+
+    # Get all data types
+    all_types, enabled = get_all_data_types()
+    print(f"Found {len(all_types)} data types ({len(enabled)} enabled)\n")
+
+    # Fetch row counts for enabled data types
+    print("Fetching row counts...")
+    row_counts = {}
+    for dt in all_types:
+        if dt in enabled:
+            count = get_row_count(dt)
+            row_counts[dt] = count
+            status = f"{count:,}" if count is not None else "N/A (not accessible)"
+            print(f"  {dt}: {status}")
+
+    # Write schema file
+    schema_filename = os.path.join(dated_output_dir, f"schema_{timestamp}.csv")
+    write_schema(all_types, enabled, row_counts, schema_filename)
+    print(f"\nSchema saved: {schema_filename}")
+
+    # Backup all enabled data types
+    print(f"\nBackup started — {len(enabled)} table(s)")
+    print(f"Output folder: {dated_output_dir}")
     print(f"Timestamp: {timestamp}\n")
 
-    for dt in selected:
+    for dt in enabled:
         print(f"[{dt}]")
         records = fetch_all(dt)
 
@@ -122,7 +188,7 @@ def main():
             print(f"  FAILED — skipping\n")
             continue
 
-        filename = os.path.join(OUTPUT_DIR, f"{dt}_{timestamp}.csv")
+        filename = os.path.join(dated_output_dir, f"{dt}_{timestamp}.csv")
 
         if not records:
             # Create empty CSV with just the header row

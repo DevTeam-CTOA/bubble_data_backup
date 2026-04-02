@@ -17,31 +17,27 @@ BUBBLE_API_TOKEN=your_token_here
 
 ## Usage
 
-### 1. Discover available data types
-
-```bash
-python3 check_tables.py
-```
-
-Generates `generated_backups/schema.csv` listing all data types and whether their Data API is enabled.
-
-### 2. Select data types to back up
-
-Edit `backup_selected_data-types.csv`:
-
-```csv
-data_type
-user
-course
-lecture
-```
-
-Only data types with `api_enabled: yes` in the schema can be backed up.
-
-### 3. Run the backup
+Simply run:
 
 ```bash
 python3 run_backup.py
 ```
 
-Generates one CSV per data type in `generated_backups/`, named `{data_type}_{timestamp}.csv`.
+This will automatically:
+
+1. **Create a dated folder** in `generated_backups/` (e.g., `generated_backups/2026-04-02/`)
+2. **Generate a schema file** with all available data types and row counts (e.g., `schema_2026-04-02T10-30-15-0300.csv`)
+3. **Back up all enabled data types** to individual CSV files (e.g., `user_2026-04-02T10-30-15-0300.csv`)
+
+## Output Structure
+
+```
+generated_backups/
+└── 2026-04-02/
+    ├── schema_2026-04-02T10-30-15-0300.csv
+    ├── user_2026-04-02T10-30-15-0300.csv
+    ├── course_2026-04-02T10-30-15-0300.csv
+    └── ...
+```
+
+Each backup run creates a new dated folder with timestamped files, making it easy to track and compare backups over time.
