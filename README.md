@@ -33,8 +33,6 @@ BUBBLE_INCREMENTAL_OVERLAP_SECONDS=300
 python3 full_backup.py
 ```
 
-`run_backup.py` remains as a compatibility alias for `full_backup.py`.
-
 The full backup:
 
 1. Creates a dated folder in `generated_backups/`
