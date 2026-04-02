@@ -122,13 +122,17 @@ def main():
             print(f"  FAILED — skipping\n")
             continue
 
-        if not records:
-            print(f"  Empty — no records\n")
-            continue
-
         filename = os.path.join(OUTPUT_DIR, f"{dt}_{timestamp}.csv")
-        num_cols = write_csv(records, filename)
-        print(f"  Saved: {filename} ({len(records)} records, {num_cols} columns)\n")
+
+        if not records:
+            # Create empty CSV with just the header row
+            with open(filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+                writer.writerow(["_id"])  # Minimal header for empty tables
+            print(f"  Empty — saved: {filename} (0 records)\n")
+        else:
+            num_cols = write_csv(records, filename)
+            print(f"  Saved: {filename} ({len(records)} records, {num_cols} columns)\n")
 
     print("Backup complete!")
 
