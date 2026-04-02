@@ -26,9 +26,14 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "generated_backups")
 CONSOLIDATED_DIR = os.path.join(OUTPUT_DIR, "consolidated")
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("BUBBLE_REQUEST_TIMEOUT_SECONDS", "60"))
 INCREMENTAL_OVERLAP_SECONDS = int(os.getenv("BUBBLE_INCREMENTAL_OVERLAP_SECONDS", "300"))
-MAX_CONCURRENT_TABLES = int(os.getenv("MAX_CONCURRENT_TABLES", "5"))
+MAX_CONCURRENT_TABLES = int(os.getenv("MAX_CONCURRENT_TABLES", "10"))
 LARGE_TABLE_ROW_THRESHOLD = int(os.getenv("LARGE_TABLE_ROW_THRESHOLD", "100000"))
 MAX_CONCURRENT_LARGE_TABLES = int(os.getenv("MAX_CONCURRENT_LARGE_TABLES", "2"))
+LARGE_TABLE_NAMES = {
+    name.strip()
+    for name in os.getenv("LARGE_TABLE_NAMES", "").split(",")
+    if name.strip()
+}
 REQUEST_MAX_RETRIES = int(os.getenv("BUBBLE_REQUEST_MAX_RETRIES", "3"))
 REQUEST_RETRY_BACKOFF_SECONDS = float(os.getenv("BUBBLE_REQUEST_RETRY_BACKOFF_SECONDS", "2"))
 BUBBLE_MODIFIED_FIELD = "Modified Date"
@@ -178,7 +183,7 @@ def fetch_records(data_type, constraints=None, progress_label=None):
         remaining = data.get("remaining", 0)
 
         all_records.extend(results)
-        print(f"  {len(all_records)} records (remaining: {remaining})")
+        print(f"  [{label}] {len(all_records)} records (remaining: {remaining})")
 
         if remaining == 0:
             break
@@ -279,6 +284,16 @@ def get_consolidated_path(table_name):
     """Returns the consolidated CSV path for a table."""
     ensure_output_dirs()
     return os.path.join(CONSOLIDATED_DIR, f"{table_name}.csv")
+
+
+def is_large_table(table_name, row_count):
+    """Returns whether a table should use the heavy-table concurrency pool."""
+    if table_name in LARGE_TABLE_NAMES:
+        return True
+    if row_count is None:
+        return False
+    return row_count >= LARGE_TABLE_ROW_THRESHOLD
+
 
 def read_csv_records(filename):
     """Reads CSV rows into memory preserving header order."""

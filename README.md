@@ -22,6 +22,10 @@ BUBBLE_API_URL=https://platform.cto.academy/version-live/api/1.1
 BUBBLE_API_TOKEN=your_token_here
 BUBBLE_REQUEST_TIMEOUT_SECONDS=60
 BUBBLE_INCREMENTAL_OVERLAP_SECONDS=300
+MAX_CONCURRENT_TABLES=10
+LARGE_TABLE_ROW_THRESHOLD=100000
+MAX_CONCURRENT_LARGE_TABLES=2
+LARGE_TABLE_NAMES=answer,lecturestat,tanswer,tchoice,cards_userlog,error
 ```
 
 ## Usage
@@ -36,7 +40,7 @@ The full backup:
 
 1. Creates a dated folder in `generated_backups/`
 2. Generates a schema file with all available data types and row counts
-3. Exports each enabled table to a timestamped CSV snapshot
+3. Exports enabled tables in parallel, using one concurrency limit for regular tables and another for large tables
 4. Refreshes the consolidated baseline in `generated_backups/consolidated/`
 
 ### Incremental Backup
@@ -72,6 +76,8 @@ generated_backups/
 
 ## Notes
 
+- `full_backup.py` classifies a table as "large" when its `row_count` is at or above `LARGE_TABLE_ROW_THRESHOLD`, or when its name is explicitly listed in `LARGE_TABLE_NAMES`.
+- The default full-backup parallelism is `10` regular tables plus `2` large tables. Tune `MAX_CONCURRENT_TABLES` and `MAX_CONCURRENT_LARGE_TABLES` based on Bubble API stability and local I/O pressure.
 - Incremental consolidation uses `_id` upserts, not simple append, so updated Bubble rows overwrite prior versions.
 - Deleted rows are not detected by the incremental flow alone. Run `full_backup.py` periodically to reconcile deletions and refresh the baseline.
 - There is no resume flow anymore. If a run fails, just run `full_backup.py` or `recurrent_backup.py` again from the start.
