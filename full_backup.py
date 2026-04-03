@@ -92,8 +92,11 @@ def main():
     row_counts = fetch_row_counts(enabled_tables)
 
     schema_filename = os.path.join(dated_output_dir, f"schema_{timestamp}.csv")
+    consolidated_schema = os.path.join(CONSOLIDATED_DIR, "schema.csv")
     write_schema(all_types, enabled, row_counts, schema_filename)
+    write_schema(all_types, enabled, row_counts, consolidated_schema)
     print(f"\nSchema saved: {schema_filename}")
+    print(f"Schema saved (consolidated): {consolidated_schema}")
 
     large_tables = [
         table_name for table_name in enabled_tables

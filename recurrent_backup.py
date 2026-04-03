@@ -6,6 +6,7 @@ import sys
 
 from backup_utils import (
     BUBBLE_MODIFIED_FIELD,
+    CONSOLIDATED_DIR,
     OUTPUT_DIR,
     collect_all_keys,
     ensure_output_dirs,
@@ -60,8 +61,11 @@ def main():
             print(f"  {dt}: {status}")
 
     schema_filename = os.path.join(dated_output_dir, f"schema_incremental_{timestamp}.csv")
+    consolidated_schema = os.path.join(CONSOLIDATED_DIR, "schema.csv")
     write_schema(all_types, enabled, row_counts, schema_filename)
+    write_schema(all_types, enabled, row_counts, consolidated_schema)
     print(f"\nSchema saved: {schema_filename}")
+    print(f"Schema saved (consolidated): {consolidated_schema}")
 
     print(f"\nIncremental backup started — {len(enabled)} table(s)")
     print(f"Output folder: {dated_output_dir}")
