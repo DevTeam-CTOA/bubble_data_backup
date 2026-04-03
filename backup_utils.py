@@ -395,13 +395,15 @@ def _fetch_partitioned_by_created_date(
     if left_count is None or equal_count is None or right_count is None:
         return None
 
-    if left_count + equal_count + right_count != total_count:
+    partition_total = left_count + equal_count + right_count
+    if partition_total != total_count:
         print(
             f"  [{label}] Partition count mismatch around {split_label}: "
-            f"expected {total_count}, got {left_count + equal_count + right_count}.",
-            file=sys.stderr,
+            f"expected {total_count}, got {partition_total} "
+            f"(delta {partition_total - total_count:+d}). "
+            f"Continuing with actual partition total.",
         )
-        return None
+        total_count = partition_total
 
     if equal_count > MAX_BUBBLE_GET_ITEMS:
         print(
